@@ -6,7 +6,7 @@ SRC=main.cpp
 
 LIBS=opencv4
 
-LIB_PARAMS=$(shell pkg-config --cflags --libs $(LIBS)) -ldlib -llapack -lcblas
+LIB_PARAMS=$(shell pkg-config --cflags --libs $(LIBS)) -ldlib -llapack -lcblas -lpthread
 
 all: $(OUT)
 

@@ -11,6 +11,7 @@
 #include <vector>
 #include <cstdint>
 #include <numeric>
+#include <future>
 
 void log(const std::string& msg) {
     std::cout << msg << std::endl;
@@ -107,9 +108,15 @@ public:
         , mInterations{iterations} {
     }
 
+    Calibrator(double acceptableDiff, int iterations, std::string tag)
+        : mAcceptableDiff{acceptableDiff}
+        , mInterations{iterations}
+        , mTag{tag} {
+    }
+
     bool calibrate(const cv::Mat& frame) {
         if (mThreshold > 0) {
-            return false;
+            return true;
         }
 
         cv::Point2f center;
@@ -119,6 +126,7 @@ public:
         int calibratedThreshold = 0;
 
         for(int i = 100; i > 0; --i) {
+//            log("calibrate for " + mTag);
             cv::threshold(frame, tempFrame, i, 255, cv::THRESH_BINARY);
 
             cv::erode(tempFrame, tempFrame, cv::Mat{}, cv::Point{-1, -1}, 2);
@@ -139,13 +147,6 @@ public:
                 const auto areaDiff = circleArea - contourArea;
                 const auto normalizedDiff = areaDiff / circleArea * 100;
 
-                std::cout << "threshold: " << i
-                    << ", circ: " << circleArea
-                    << ", countour: " << contourArea
-                    << ", diff: " << areaDiff
-                    << ", normalized: " << normalizedDiff
-                    << std::endl;
-
                 if(normalizedDiff < mAcceptableDiff) {
                     calibratedThreshold = i;
                     break;
@@ -159,11 +160,11 @@ public:
 
             if (mInterations < 0) {
                 mThreshold = std::accumulate(std::cbegin(mThresholds), std::cend(mThresholds), 0) / mThresholds.size();
-                return false;
+                return true;
             }
         }
 
-        return true;
+        return false;
     }
 
     int getThreshold() const {
@@ -175,6 +176,8 @@ private:
     int mInterations;
     int mThreshold = -1;
     std::vector<int> mThresholds;
+
+    std::string mTag = "";
 };
 
 int main() {
@@ -210,7 +213,13 @@ int main() {
                          cv::Size(2*dilation_size + 1, 2*dilation_size+1),
                          cv::Point(dilation_size, dilation_size));
 
-    Calibrator leftCalibrator(ACCEPTABLE_DIFF, 10);
+    Calibrator leftCalibrator(ACCEPTABLE_DIFF, 10, "left");
+    Calibrator rightCalibrator(ACCEPTABLE_DIFF, 10, "right");
+
+    bool calibrationComplete = false;
+
+    int leftThreshold = -1;
+    int rightThreshold = -1;
     // display the frame until you press a key
     while (1) {
         // capture the next frame from the webcam
@@ -250,8 +259,32 @@ int main() {
 
                 const auto mid = (faceShape.part(39).x() + faceShape.part(42).x()) / 2;
 
-                if(!leftCalibrator.calibrate(frame)) {
-                    threshold = leftCalibrator.getThreshold();
+                const auto leftRoi = frame(cv::Rect{mid, 0, frame.cols - mid, frame.rows});
+                const auto rightRoi = frame(cv::Rect{0, 0, mid, frame.rows});
+
+                if (!calibrationComplete) {
+                    tl.start();
+                    std::future<bool> rightFuture =
+                        std::async(std::launch::async, &Calibrator::calibrate, &rightCalibrator, rightRoi);
+
+                    const auto leftComplete = leftCalibrator.calibrate(leftRoi);
+
+                    if (rightFuture.get() && leftComplete) {
+                        calibrationComplete = true;
+
+                        leftThreshold = leftCalibrator.getThreshold();
+                        rightThreshold = rightCalibrator.getThreshold();
+
+                        std::cout << "################################" << std::endl;
+                        std::cout << "################################" << std::endl;
+                        std::cout << "left threshold is: " << leftThreshold << std::endl;
+                        std::cout << "right threshold is: " << rightThreshold << std::endl;
+                        std::cout << "################################" << std::endl;
+                        std::cout << "################################" << std::endl;
+                    }
+                    tl.stop("calibration");
+                } else {
+                    threshold = leftThreshold;
                     std::cout << "threshold is: " << threshold << std::endl;
                     cv::threshold(frame, frame, threshold, 255, cv::THRESH_BINARY);
 
@@ -263,7 +296,7 @@ int main() {
                 }
 
 //
-//                const auto leftGaze = find_gaze(frame(cv::Rect{0, 0, mid, frame.rows}));
+//                const auto leftGaze = find_gaze(;
 //                auto rightGaze = find_gaze(frame(cv::Rect{mid, 0, frame.cols - mid, frame.rows}));
 
  //               rightGaze += cv::Point{mid, 0};
