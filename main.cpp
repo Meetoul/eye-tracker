@@ -87,16 +87,6 @@ std::vector<cv::Point> get_max_area_contour(const cv::Mat& frame) {
     return contour;
 }
 
-cv::Point find_gaze(const cv::Mat& frame) {
-    const auto contour = get_max_area_contour(frame);
-    const auto moments = cv::moments(contour, true);
-
-    double gaze_x = moments.m10 / moments.m00;
-    double gaze_y = moments.m01 / moments.m00;
-
-    return cv::Point{gaze_x, gaze_y};
-}
-
 void select_pupil(const cv::Mat& in, cv::Mat& out, int threshold) {
     cv::threshold(in, out, threshold, 255, cv::THRESH_BINARY);
 
@@ -105,6 +95,17 @@ void select_pupil(const cv::Mat& in, cv::Mat& out, int threshold) {
     cv::medianBlur(out, out, 3);
 
     cv::bitwise_not(out, out);
+}
+
+cv::Point find_gaze(cv::Mat& frame, int threshold) {
+    select_pupil(frame, frame, threshold);
+    const auto contour = get_max_area_contour(frame);
+    const auto moments = cv::moments(contour, true);
+
+    double gaze_x = moments.m10 / moments.m00;
+    double gaze_y = moments.m01 / moments.m00;
+
+    return cv::Point{gaze_x, gaze_y};
 }
 
 class Calibrator {
@@ -168,9 +169,36 @@ private:
     std::vector<int> mThresholds;
 };
 
-int main() {
-    log("Started");
+class TailDrawer {
+public:
+    TailDrawer(int tailSize, cv::Scalar color) : mTailSize{tailSize}, mColor{color} {}
 
+    void draw(cv::Mat& img, const cv::Point& point) {
+        if (point.x > 0 && point.y > 0) {
+            addPoint(point);
+        }
+
+        if (mPoints.size() > 1) {
+            for(int i = 1; i < mPoints.size(); ++i) {
+                cv::line(img, mPoints[i - 1], mPoints[i], mColor, 2);
+            }
+        }
+    }
+
+private:
+    void addPoint(const cv::Point& point) {
+        if (mPoints.size() == mTailSize) {
+            mPoints.erase(std::begin(mPoints));
+        }
+        mPoints.emplace_back(point);
+    }
+
+    const int mTailSize;
+    cv::Scalar mColor;
+    std::vector<cv::Point> mPoints;
+};
+
+int main() {
     cv::VideoCapture camera(0);
     if (!camera.isOpened()) {
         std::cerr << "ERROR: Could not open camera" << std::endl;
@@ -206,6 +234,11 @@ int main() {
 
     int leftThreshold = -1;
     int rightThreshold = -1;
+
+    const int tailSize = 200;
+
+    TailDrawer rightEyeDrawer{tailSize, cv::Scalar{0, 0, 255}};
+    TailDrawer leftEyeDrawer{tailSize, cv::Scalar{255, 0, 0}};
     // display the frame until you press a key
     while (1) {
         // capture the next frame from the webcam
@@ -238,8 +271,8 @@ int main() {
 
                 const auto mid = (faceShape.part(39).x() + faceShape.part(42).x()) / 2;
 
-                auto leftRoi = frame(cv::Rect{mid, 0, frame.cols - mid, frame.rows});
-                auto rightRoi = frame(cv::Rect{0, 0, mid, frame.rows});
+                auto rightRoi = frame(cv::Rect{mid, 0, frame.cols - mid, frame.rows});
+                auto leftRoi = frame(cv::Rect{0, 0, mid, frame.rows});
 
                 if (!calibrationComplete) {
                     tl.start();
@@ -261,24 +294,18 @@ int main() {
                     }
                     tl.stop("calibration");
                 } else {
-                    std::future<void> rightFuture =
-                        std::async(std::launch::async, &select_pupil, std::ref(rightRoi),
-                                   std::ref(rightRoi), rightThreshold);
+                    std::future<cv::Point> rightFuture = std::async(
+                        std::launch::async, &find_gaze, std::ref(rightRoi), rightThreshold);
 
-                    select_pupil(leftRoi, leftRoi, leftThreshold);
+                    const auto leftGaze = find_gaze(leftRoi, leftThreshold);
+                    const auto rightGaze = rightFuture.get() + cv::Point{mid, 0};
 
-                    rightFuture.get();
+                    cv::circle(colorFrame, leftGaze, 2, cv::Scalar(255, 0, 0), cv::FILLED);
+                    cv::circle(colorFrame, rightGaze, 2, cv::Scalar(0, 0, 255), cv::FILLED);
+
+                    rightEyeDrawer.draw(colorFrame, rightGaze);
+                    leftEyeDrawer.draw(colorFrame, leftGaze);
                 }
-
-                const auto leftGaze = find_gaze(leftRoi);
-                auto rightGaze = find_gaze(rightRoi);
-
-                rightGaze += cv::Point{mid, 0};
-
-                cv::circle(colorFrame, leftGaze, 2, cv::Scalar(0, 0, 255), cv::FILLED);
-                cv::circle(colorFrame, rightGaze, 2, cv::Scalar(0, 0, 255), cv::FILLED);
-
-                colorFrame.setTo(cv::Scalar(0, 255, 0), frame);
             } else {
                 log("Face shape is not complete");
             }
