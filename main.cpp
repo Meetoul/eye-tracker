@@ -44,19 +44,19 @@ static const std::vector<unsigned long> RIGHT_POINTS = {42, 43, 44, 45, 46, 47};
 
 static const double ACCEPTABLE_DIFF = 40.0;
 
-void apply_eye_mask(const cv::Mat& mask, const dlib::full_object_detection& shape_points,
-                    const std::vector<unsigned long> eye_points) {
+void appplyEyeMask(const cv::Mat& mask, const dlib::full_object_detection& shapePoints,
+                   const std::vector<unsigned long> eyePoints) {
     std::vector<cv::Point> points;
 
-    for (const auto& ep : eye_points) {
-        const auto p = shape_points.part(ep);
+    for (const auto& ep : eyePoints) {
+        const auto p = shapePoints.part(ep);
         points.emplace_back(p.x(), p.y());
     }
 
     cv::fillConvexPoly(mask, points, cv::Scalar(255, 255, 255));
 }
 
-int find_max_area(const std::vector<std::vector<cv::Point>> areas) {
+int findMaxArea(const std::vector<std::vector<cv::Point>> areas) {
     int maxAreaIdx = -1;
     double maxArea = 0;
 
@@ -71,13 +71,13 @@ int find_max_area(const std::vector<std::vector<cv::Point>> areas) {
     return maxAreaIdx;
 }
 
-std::vector<cv::Point> get_max_area_contour(const cv::Mat& frame) {
+std::vector<cv::Point> getMaxAreaContour(const cv::Mat& frame) {
     std::vector<std::vector<cv::Point>> contours;
     std::vector<cv::Vec4i> hierarchy;
 
     cv::findContours(frame, contours, hierarchy, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
 
-    const auto maxContourIndex = find_max_area(contours);
+    const auto maxContourIndex = findMaxArea(contours);
     std::vector<cv::Point> contour;
 
     if (maxContourIndex >= 0) {
@@ -87,7 +87,7 @@ std::vector<cv::Point> get_max_area_contour(const cv::Mat& frame) {
     return contour;
 }
 
-void select_pupil(const cv::Mat& in, cv::Mat& out, int threshold) {
+void selectPupil(const cv::Mat& in, cv::Mat& out, int threshold) {
     cv::threshold(in, out, threshold, 255, cv::THRESH_BINARY);
 
     cv::erode(out, out, cv::Mat{}, cv::Point{-1, -1}, 2);
@@ -97,9 +97,9 @@ void select_pupil(const cv::Mat& in, cv::Mat& out, int threshold) {
     cv::bitwise_not(out, out);
 }
 
-cv::Point find_gaze(cv::Mat& frame, int threshold) {
-    select_pupil(frame, frame, threshold);
-    const auto contour = get_max_area_contour(frame);
+cv::Point findGaze(cv::Mat& frame, int threshold) {
+    selectPupil(frame, frame, threshold);
+    const auto contour = getMaxAreaContour(frame);
     const auto moments = cv::moments(contour, true);
 
     double gaze_x = moments.m10 / moments.m00;
@@ -125,9 +125,9 @@ public:
         int calibratedThreshold = 0;
 
         for (int i = 100; i > 0; --i) {
-            select_pupil(frame, tempFrame, i);
+            selectPupil(frame, tempFrame, i);
 
-            const auto contour = get_max_area_contour(tempFrame);
+            const auto contour = getMaxAreaContour(tempFrame);
 
             auto currentDiff = std::numeric_limits<double>::max();
             if (contour.size() > 3) {
@@ -179,7 +179,7 @@ public:
         }
 
         if (mPoints.size() > 1) {
-            for(int i = 1; i < mPoints.size(); ++i) {
+            for (int i = 1; i < mPoints.size(); ++i) {
                 cv::line(img, mPoints[i - 1], mPoints[i], mColor, 2);
             }
         }
@@ -214,7 +214,6 @@ int main() {
     dlib::shape_predictor sp;
     dlib::deserialize(PREDICTOR_FILE) >> sp;
 
-    // this will contain the image from the webcam
     cv::Mat colorFrame;
     cv::Mat frame;
     cv::Mat mask;
@@ -258,8 +257,8 @@ int main() {
             if (faceShape.num_parts() == 68) {
                 mask = cv::Mat::zeros(frame.size(), frame.type());
 
-                apply_eye_mask(mask, faceShape, LEFT_POINTS);
-                apply_eye_mask(mask, faceShape, RIGHT_POINTS);
+                appplyEyeMask(mask, faceShape, LEFT_POINTS);
+                appplyEyeMask(mask, faceShape, RIGHT_POINTS);
 
                 cv::dilate(mask, mask, kernel, cv::Point{-1, -1}, 2);
                 cv::bitwise_and(frame, mask, frame);
@@ -275,7 +274,6 @@ int main() {
                 auto leftRoi = frame(cv::Rect{0, 0, mid, frame.rows});
 
                 if (!calibrationComplete) {
-                    tl.start();
                     std::future<bool> rightFuture = std::async(
                         std::launch::async, &Calibrator::calibrate, &rightCalibrator, rightRoi);
 
@@ -292,12 +290,11 @@ int main() {
                         std::cout << "left threshold is: " << leftThreshold << std::endl;
                         std::cout << "right threshold is: " << rightThreshold << std::endl;
                     }
-                    tl.stop("calibration");
                 } else {
                     std::future<cv::Point> rightFuture = std::async(
-                        std::launch::async, &find_gaze, std::ref(rightRoi), rightThreshold);
+                        std::launch::async, &findGaze, std::ref(rightRoi), rightThreshold);
 
-                    const auto leftGaze = find_gaze(leftRoi, leftThreshold);
+                    const auto leftGaze = findGaze(leftRoi, leftThreshold);
                     const auto rightGaze = rightFuture.get() + cv::Point{mid, 0};
 
                     cv::circle(colorFrame, leftGaze, 2, cv::Scalar(255, 0, 0), cv::FILLED);
