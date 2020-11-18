@@ -1,27 +1,23 @@
-#include <opencv2/opencv.hpp>
 #include <opencv2/highgui/highgui.hpp>
+#include <opencv2/opencv.hpp>
 
-#include <dlib/image_processing/frontal_face_detector.h>
 #include <dlib/image_processing.h>
+#include <dlib/image_processing/frontal_face_detector.h>
 #include <dlib/opencv.h>
 
+#include <cstdint>
+#include <future>
 #include <iostream>
+#include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
-#include <cstdint>
-#include <numeric>
-#include <future>
 
-void log(const std::string& msg) {
-    std::cout << msg << std::endl;
-}
+void log(const std::string& msg) { std::cout << msg << std::endl; }
 
 class TimeLogger {
 public:
-    void start() {
-        mBegin = std::chrono::steady_clock::now();
-    }
+    void start() { mBegin = std::chrono::steady_clock::now(); }
 
     void stop(const std::string action) {
         using namespace std::chrono;
@@ -29,7 +25,7 @@ public:
         const auto duration = duration_cast<milliseconds>(end - mBegin).count();
         const auto mduration = duration_cast<microseconds>(end - mBegin).count();
 
-//        std::cout << action << " took " << duration << "ms" << std::endl;
+        // std::cout << action << " took " << duration << "ms" << std::endl;
         std::cout << action << " took " << mduration << "micros" << std::endl;
     }
 
@@ -48,13 +44,11 @@ static const std::vector<unsigned long> RIGHT_POINTS = {42, 43, 44, 45, 46, 47};
 
 static const double ACCEPTABLE_DIFF = 40.0;
 
-void apply_eye_mask(const cv::Mat& mask,
-    const dlib::full_object_detection& shape_points,
-    const std::vector<unsigned long> eye_points) {
-
+void apply_eye_mask(const cv::Mat& mask, const dlib::full_object_detection& shape_points,
+                    const std::vector<unsigned long> eye_points) {
     std::vector<cv::Point> points;
 
-    for(const auto& ep : eye_points) {
+    for (const auto& ep : eye_points) {
         const auto p = shape_points.part(ep);
         points.emplace_back(p.x(), p.y());
     }
@@ -66,9 +60,9 @@ int find_max_area(const std::vector<std::vector<cv::Point>> areas) {
     int maxAreaIdx = -1;
     double maxArea = 0;
 
-    for(int i = 0; i < areas.size(); ++i) {
+    for (int i = 0; i < areas.size(); ++i) {
         const double area = cv::contourArea(areas[i]);
-        if(area > maxArea) {
+        if (area > maxArea) {
             maxArea = area;
             maxAreaIdx = i;
         }
@@ -98,27 +92,25 @@ cv::Point find_gaze(const cv::Mat& frame) {
     const auto moments = cv::moments(contour, true);
 
     double gaze_x = moments.m10 / moments.m00;
-    double gaze_y = moments.m01 / moments.m00 ;
+    double gaze_y = moments.m01 / moments.m00;
 
     return cv::Point{gaze_x, gaze_y};
 }
 
-void select_pupil(const cv::Mat &in, cv::Mat& out, int threshold) {
-        cv::threshold(in, out, threshold, 255, cv::THRESH_BINARY);
+void select_pupil(const cv::Mat& in, cv::Mat& out, int threshold) {
+    cv::threshold(in, out, threshold, 255, cv::THRESH_BINARY);
 
-        cv::erode(out, out, cv::Mat{}, cv::Point{-1, -1}, 2);
-        cv::dilate(out, out, cv::Mat{}, cv::Point{-1, -1}, 4);
-        cv::medianBlur(out, out, 3);
+    cv::erode(out, out, cv::Mat{}, cv::Point{-1, -1}, 2);
+    cv::dilate(out, out, cv::Mat{}, cv::Point{-1, -1}, 4);
+    cv::medianBlur(out, out, 3);
 
-        cv::bitwise_not(out, out);
+    cv::bitwise_not(out, out);
 }
 
 class Calibrator {
 public:
     Calibrator(double acceptableDiff, int iterations)
-        : mAcceptableDiff{acceptableDiff}
-        , mInterations{iterations} {
-    }
+        : mAcceptableDiff{acceptableDiff}, mInterations{iterations} {}
 
     bool calibrate(const cv::Mat& frame) {
         if (mThreshold > 0) {
@@ -131,7 +123,7 @@ public:
         cv::Mat tempFrame;
         int calibratedThreshold = 0;
 
-        for(int i = 100; i > 0; --i) {
+        for (int i = 100; i > 0; --i) {
             select_pupil(frame, tempFrame, i);
 
             const auto contour = get_max_area_contour(tempFrame);
@@ -146,7 +138,7 @@ public:
                 const auto areaDiff = circleArea - contourArea;
                 const auto normalizedDiff = areaDiff / circleArea * 100;
 
-                if(normalizedDiff < mAcceptableDiff) {
+                if (normalizedDiff < mAcceptableDiff) {
                     calibratedThreshold = i;
                     break;
                 }
@@ -158,7 +150,8 @@ public:
             mInterations--;
 
             if (mInterations < 0) {
-                mThreshold = std::accumulate(std::cbegin(mThresholds), std::cend(mThresholds), 0) / mThresholds.size();
+                mThreshold = std::accumulate(std::cbegin(mThresholds), std::cend(mThresholds), 0) /
+                             mThresholds.size();
                 return true;
             }
         }
@@ -166,9 +159,7 @@ public:
         return false;
     }
 
-    int getThreshold() const {
-        return mThreshold;
-    }
+    int getThreshold() const { return mThreshold; }
 
 private:
     double mAcceptableDiff;
@@ -202,11 +193,11 @@ int main() {
 
     int dilation_size = 1;
     int dilation_type = cv::MORPH_RECT;
-//    int dilation_type = MORPH_CROSS;
-//    int dilation_type = MORPH_ELLIPSE;
-    cv::Mat kernel = cv::getStructuringElement( dilation_type,
-                         cv::Size(2*dilation_size + 1, 2*dilation_size+1),
-                         cv::Point(dilation_size, dilation_size));
+    // int dilation_type = MORPH_CROSS;
+    // int dilation_type = MORPH_ELLIPSE;
+    cv::Mat kernel = cv::getStructuringElement(
+        dilation_type, cv::Size(2 * dilation_size + 1, 2 * dilation_size + 1),
+        cv::Point(dilation_size, dilation_size));
 
     Calibrator leftCalibrator(ACCEPTABLE_DIFF, 10);
     Calibrator rightCalibrator(ACCEPTABLE_DIFF, 10);
@@ -228,10 +219,10 @@ int main() {
 
         const auto faces = ffd(dlibImage);
 
-        if(faces.size() == 1) {
+        if (faces.size() == 1) {
             const auto faceShape = sp(dlibImage, faces[0]);
 
-            if(faceShape.num_parts() == 68) {
+            if (faceShape.num_parts() == 68) {
                 mask = cv::Mat::zeros(frame.size(), frame.type());
 
                 apply_eye_mask(mask, faceShape, LEFT_POINTS);
@@ -252,8 +243,8 @@ int main() {
 
                 if (!calibrationComplete) {
                     tl.start();
-                    std::future<bool> rightFuture =
-                        std::async(std::launch::async, &Calibrator::calibrate, &rightCalibrator, rightRoi);
+                    std::future<bool> rightFuture = std::async(
+                        std::launch::async, &Calibrator::calibrate, &rightCalibrator, rightRoi);
 
                     const auto leftComplete = leftCalibrator.calibrate(leftRoi);
 
@@ -263,28 +254,29 @@ int main() {
                         leftThreshold = leftCalibrator.getThreshold();
                         rightThreshold = rightCalibrator.getThreshold();
 
-                        std::cout << "############### Calibration complete #################" << std::endl;
+                        std::cout << "############### Calibration complete #################"
+                                  << std::endl;
                         std::cout << "left threshold is: " << leftThreshold << std::endl;
                         std::cout << "right threshold is: " << rightThreshold << std::endl;
                     }
                     tl.stop("calibration");
                 } else {
                     std::future<void> rightFuture =
-                        std::async(std::launch::async, &select_pupil, std::ref(rightRoi), std::ref(rightRoi), rightThreshold);
+                        std::async(std::launch::async, &select_pupil, std::ref(rightRoi),
+                                   std::ref(rightRoi), rightThreshold);
 
                     select_pupil(leftRoi, leftRoi, leftThreshold);
 
                     rightFuture.get();
                 }
 
-
                 const auto leftGaze = find_gaze(leftRoi);
                 auto rightGaze = find_gaze(rightRoi);
 
                 rightGaze += cv::Point{mid, 0};
 
-                cv::circle(colorFrame, leftGaze, 2, cv::Scalar(0,0,255),cv::FILLED);
-                cv::circle(colorFrame, rightGaze, 2, cv::Scalar(0,0,255),cv::FILLED);
+                cv::circle(colorFrame, leftGaze, 2, cv::Scalar(0, 0, 255), cv::FILLED);
+                cv::circle(colorFrame, rightGaze, 2, cv::Scalar(0, 0, 255), cv::FILLED);
 
                 colorFrame.setTo(cv::Scalar(0, 255, 0), frame);
             } else {
@@ -301,8 +293,7 @@ int main() {
         cv::imshow(WIN, colorFrame);
 
         // wait (10ms) for a key to be pressed
-        if (cv::waitKey(33) == 'q')
-            break;
+        if (cv::waitKey(33) == 'q') break;
     }
 
     return 0;
