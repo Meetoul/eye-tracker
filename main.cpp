@@ -27,8 +27,10 @@ public:
         using namespace std::chrono;
         const auto end = steady_clock::now();
         const auto duration = duration_cast<milliseconds>(end - mBegin).count();
+        const auto mduration = duration_cast<microseconds>(end - mBegin).count();
 
-        std::cout << action << " took " << duration << "ms" << std::endl;
+//        std::cout << action << " took " << duration << "ms" << std::endl;
+        std::cout << action << " took " << mduration << "micros" << std::endl;
     }
 
 private:
@@ -101,17 +103,21 @@ cv::Point find_gaze(const cv::Mat& frame) {
     return cv::Point{gaze_x, gaze_y};
 }
 
+void select_pupil(const cv::Mat &in, cv::Mat& out, int threshold) {
+        cv::threshold(in, out, threshold, 255, cv::THRESH_BINARY);
+
+        cv::erode(out, out, cv::Mat{}, cv::Point{-1, -1}, 2);
+        cv::dilate(out, out, cv::Mat{}, cv::Point{-1, -1}, 4);
+        cv::medianBlur(out, out, 3);
+
+        cv::bitwise_not(out, out);
+}
+
 class Calibrator {
 public:
     Calibrator(double acceptableDiff, int iterations)
         : mAcceptableDiff{acceptableDiff}
         , mInterations{iterations} {
-    }
-
-    Calibrator(double acceptableDiff, int iterations, std::string tag)
-        : mAcceptableDiff{acceptableDiff}
-        , mInterations{iterations}
-        , mTag{tag} {
     }
 
     bool calibrate(const cv::Mat& frame) {
@@ -126,14 +132,7 @@ public:
         int calibratedThreshold = 0;
 
         for(int i = 100; i > 0; --i) {
-//            log("calibrate for " + mTag);
-            cv::threshold(frame, tempFrame, i, 255, cv::THRESH_BINARY);
-
-            cv::erode(tempFrame, tempFrame, cv::Mat{}, cv::Point{-1, -1}, 2);
-            cv::dilate(tempFrame, tempFrame, cv::Mat{}, cv::Point{-1, -1}, 4);
-            cv::medianBlur(tempFrame, tempFrame, 3);
-
-            cv::bitwise_not(tempFrame, tempFrame);
+            select_pupil(frame, tempFrame, i);
 
             const auto contour = get_max_area_contour(tempFrame);
 
@@ -176,8 +175,6 @@ private:
     int mInterations;
     int mThreshold = -1;
     std::vector<int> mThresholds;
-
-    std::string mTag = "";
 };
 
 int main() {
@@ -191,9 +188,7 @@ int main() {
 
     int threshold = 0;
 
-    // create a window to display the images from the webcam
     cv::namedWindow(WIN, cv::WINDOW_NORMAL);
-//    cv::createTrackbar("threshold", WIN, &threshold, 254);
 
     auto ffd = dlib::get_frontal_face_detector();
 
@@ -213,8 +208,8 @@ int main() {
                          cv::Size(2*dilation_size + 1, 2*dilation_size+1),
                          cv::Point(dilation_size, dilation_size));
 
-    Calibrator leftCalibrator(ACCEPTABLE_DIFF, 10, "left");
-    Calibrator rightCalibrator(ACCEPTABLE_DIFF, 10, "right");
+    Calibrator leftCalibrator(ACCEPTABLE_DIFF, 10);
+    Calibrator rightCalibrator(ACCEPTABLE_DIFF, 10);
 
     bool calibrationComplete = false;
 
@@ -231,20 +226,13 @@ int main() {
 
         dlib::cv_image<unsigned char> dlibImage{frame};
 
-//        tl.start();
         const auto faces = ffd(dlibImage);
-//        tl.stop("face detection");
 
         if(faces.size() == 1) {
-//            log("Processing detected face");
-//            tl.start();
             const auto faceShape = sp(dlibImage, faces[0]);
-//            tl.stop("face shaping");
 
             if(faceShape.num_parts() == 68) {
-//                log("Processing points");
-                mask = cv::Mat::zeros(frame.size(),
-                    frame.type());
+                mask = cv::Mat::zeros(frame.size(), frame.type());
 
                 apply_eye_mask(mask, faceShape, LEFT_POINTS);
                 apply_eye_mask(mask, faceShape, RIGHT_POINTS);
@@ -259,8 +247,8 @@ int main() {
 
                 const auto mid = (faceShape.part(39).x() + faceShape.part(42).x()) / 2;
 
-                const auto leftRoi = frame(cv::Rect{mid, 0, frame.cols - mid, frame.rows});
-                const auto rightRoi = frame(cv::Rect{0, 0, mid, frame.rows});
+                auto leftRoi = frame(cv::Rect{mid, 0, frame.cols - mid, frame.rows});
+                auto rightRoi = frame(cv::Rect{0, 0, mid, frame.rows});
 
                 if (!calibrationComplete) {
                     tl.start();
@@ -275,34 +263,28 @@ int main() {
                         leftThreshold = leftCalibrator.getThreshold();
                         rightThreshold = rightCalibrator.getThreshold();
 
-                        std::cout << "################################" << std::endl;
-                        std::cout << "################################" << std::endl;
+                        std::cout << "############### Calibration complete #################" << std::endl;
                         std::cout << "left threshold is: " << leftThreshold << std::endl;
                         std::cout << "right threshold is: " << rightThreshold << std::endl;
-                        std::cout << "################################" << std::endl;
-                        std::cout << "################################" << std::endl;
                     }
                     tl.stop("calibration");
                 } else {
-                    threshold = leftThreshold;
-                    std::cout << "threshold is: " << threshold << std::endl;
-                    cv::threshold(frame, frame, threshold, 255, cv::THRESH_BINARY);
+                    std::future<void> rightFuture =
+                        std::async(std::launch::async, &select_pupil, std::ref(rightRoi), std::ref(rightRoi), rightThreshold);
 
-                    cv::erode(frame, frame, cv::Mat{}, cv::Point{-1, -1}, 2);
-                    cv::dilate(frame, frame, cv::Mat{}, cv::Point{-1, -1}, 4);
-                    cv::medianBlur(frame, frame, 3);
+                    select_pupil(leftRoi, leftRoi, leftThreshold);
 
-                    cv::bitwise_not(frame, frame);
+                    rightFuture.get();
                 }
 
-//
-//                const auto leftGaze = find_gaze(;
-//                auto rightGaze = find_gaze(frame(cv::Rect{mid, 0, frame.cols - mid, frame.rows}));
 
- //               rightGaze += cv::Point{mid, 0};
+                const auto leftGaze = find_gaze(leftRoi);
+                auto rightGaze = find_gaze(rightRoi);
 
-//                cv::circle(colorFrame, leftGaze, 2, cv::Scalar(0,0,255),cv::FILLED);
-//                cv::circle(colorFrame, rightGaze, 2, cv::Scalar(0,0,255),cv::FILLED);
+                rightGaze += cv::Point{mid, 0};
+
+                cv::circle(colorFrame, leftGaze, 2, cv::Scalar(0,0,255),cv::FILLED);
+                cv::circle(colorFrame, rightGaze, 2, cv::Scalar(0,0,255),cv::FILLED);
 
                 colorFrame.setTo(cv::Scalar(0, 255, 0), frame);
             } else {
