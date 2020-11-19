@@ -198,6 +198,43 @@ private:
     std::vector<cv::Point> mPoints;
 };
 
+class MovementDetector {
+public:
+    cv::Point detect(const cv::Point& point) {
+        // input point is invalid, return zero vector
+        if (point.x < 0 && point.y < 0) {
+            return cv::Point{};
+        }
+
+        // input point is a first point, return zero vector
+        if (mPrevPoint.x == INVAL && mPrevPoint.y == INVAL) {
+            mPrevPoint = point;
+            return cv::Point{};
+        }
+
+        const auto vec = cv::Point{point.x - mPrevPoint.x, point.y - mPrevPoint.y};
+
+        const auto abs_x = abs(vec.x);
+        const auto abs_y = abs(vec.y);
+
+        if ((abs_x < STAB_BOT && abs_y < STAB_BOT) || (abs_x > STAB_TOP && abs_y > STAB_TOP)) {
+            // probably shaking or jumping, return zero vector
+            return cv::Point{};
+        }
+
+        mPrevPoint = point;
+
+        return vec;
+    }
+
+private:
+    static constexpr int INVAL = -1;
+    static constexpr int STAB_BOT = 2;
+    static constexpr int STAB_TOP = 70;
+
+    cv::Point mPrevPoint{INVAL, INVAL};
+};
+
 int main() {
     cv::VideoCapture camera(0);
     if (!camera.isOpened()) {
@@ -234,10 +271,16 @@ int main() {
     int leftThreshold = -1;
     int rightThreshold = -1;
 
-    const int tailSize = 200;
+    const int tailSize = 20;
 
-    TailDrawer rightEyeDrawer{tailSize, cv::Scalar{0, 0, 255}};
+    // get one frame to calculate the frame center
+    camera >> colorFrame;
+    auto drawingPoint = cv::Point{colorFrame.cols / 2, colorFrame.rows / 2};
+
+    //    TailDrawer rightEyeDrawer{tailSize, cv::Scalar{0, 0, 255}};
     TailDrawer leftEyeDrawer{tailSize, cv::Scalar{255, 0, 0}};
+
+    MovementDetector leftEyeDetector;
     // display the frame until you press a key
     while (1) {
         // capture the next frame from the webcam
@@ -296,12 +339,15 @@ int main() {
 
                     const auto leftGaze = findGaze(leftRoi, leftThreshold);
                     const auto rightGaze = rightFuture.get() + cv::Point{mid, 0};
+                    const auto gaze = (leftGaze + rightGaze) * 0.5;
 
-                    cv::circle(colorFrame, leftGaze, 2, cv::Scalar(255, 0, 0), cv::FILLED);
-                    cv::circle(colorFrame, rightGaze, 2, cv::Scalar(0, 0, 255), cv::FILLED);
+                    cv::circle(colorFrame, gaze, 2, cv::Scalar(0, 0, 255), cv::FILLED);
 
-                    rightEyeDrawer.draw(colorFrame, rightGaze);
-                    leftEyeDrawer.draw(colorFrame, leftGaze);
+                    auto vec = leftEyeDetector.detect(gaze);
+                    vec *= 5;
+                    drawingPoint += vec;
+                    std::cout << "eye vec is " << vec.x << ", " << vec.y << std::endl;
+                    leftEyeDrawer.draw(colorFrame, drawingPoint);
                 }
             } else {
                 log("Face shape is not complete");
