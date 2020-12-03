@@ -11,6 +11,7 @@
 #include <numeric>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 void log(const std::string& msg) { std::cout << msg << std::endl; }
@@ -44,6 +45,8 @@ static const std::vector<unsigned long> RIGHT_POINTS = {42, 43, 44, 45, 46, 47};
 
 static const double ACCEPTABLE_DIFF = 40.0;
 
+static const int GAZE_RANGE = 500;
+
 void appplyEyeMask(const cv::Mat& mask, const dlib::full_object_detection& shapePoints,
                    const std::vector<unsigned long> eyePoints) {
     std::vector<cv::Point> points;
@@ -54,6 +57,15 @@ void appplyEyeMask(const cv::Mat& mask, const dlib::full_object_detection& shape
     }
 
     cv::fillConvexPoly(mask, points, cv::Scalar(255, 255, 255));
+}
+
+void printMask(const cv::Mat& mask, const dlib::full_object_detection& shapePoints) {
+    std::vector<cv::Point> points;
+
+    for (int i = 0; i < 68; ++i) {
+        const auto p = shapePoints.part(i);
+        cv::circle(mask, cv::Point{p.x(), p.y()}, 2, cv::Scalar(255, 0, 0), 1, cv::LINE_8);
+    }
 }
 
 int findMaxArea(const std::vector<std::vector<cv::Point>> areas) {
@@ -97,15 +109,29 @@ void selectPupil(const cv::Mat& in, cv::Mat& out, int threshold) {
     cv::bitwise_not(out, out);
 }
 
-cv::Point findGaze(cv::Mat& frame, int threshold) {
-    selectPupil(frame, frame, threshold);
+cv::Point2f findCenter(const cv::Mat& frame) {
     const auto contour = getMaxAreaContour(frame);
     const auto moments = cv::moments(contour, true);
 
-    double gaze_x = moments.m10 / moments.m00;
-    double gaze_y = moments.m01 / moments.m00;
+    const float gaze_x = moments.m10 / moments.m00;
+    const float gaze_y = moments.m01 / moments.m00;
 
-    return cv::Point{gaze_x, gaze_y};
+    return cv::Point2f{gaze_x, gaze_y};
+}
+
+std::tuple<cv::Point2f, int> findEyeCenter(const cv::Mat& frame) {
+    const auto contour = getMaxAreaContour(frame);
+    const auto rect = cv::boundingRect(contour);
+
+    //    std::cout << "Eye height is " << rect.height << std::endl;
+
+    return std::make_tuple(cv::Point2f{rect.x + rect.width / 2, rect.y + rect.height / 2},
+                           rect.height);
+}
+
+cv::Point2f findGaze(cv::Mat& frame, int threshold) {
+    selectPupil(frame, frame, threshold);
+    return findCenter(frame);
 }
 
 class Calibrator {
@@ -235,6 +261,18 @@ private:
     cv::Point mPrevPoint{INVAL, INVAL};
 };
 
+bool inRange(int num, int range) { return abs(num) < range; }
+
+float lowerBy(float d) {
+    const float a4 = 0.0554691;
+    const float a3 = -0.49279;
+    const float a2 = 1.25006;
+    const float a1 = -1.81274;
+    const float a0 = 2;
+
+    return a4 * pow(d, 4) + a3 * pow(d, 3) + a2 * pow(d, 2) + a1 * d + a0;
+}
+
 int main() {
     cv::VideoCapture camera(0);
     if (!camera.isOpened()) {
@@ -271,16 +309,11 @@ int main() {
     int leftThreshold = -1;
     int rightThreshold = -1;
 
-    const int tailSize = 20;
+    const int circSize = 50;
+    const cv::Point2f circCenter{circSize / 2, circSize / 2};
 
-    // get one frame to calculate the frame center
-    camera >> colorFrame;
-    auto drawingPoint = cv::Point{colorFrame.cols / 2, colorFrame.rows / 2};
+    cv::Mat axis{circSize, circSize, CV_8UC3, cv::Scalar{255, 255, 255}};
 
-    //    TailDrawer rightEyeDrawer{tailSize, cv::Scalar{0, 0, 255}};
-    TailDrawer leftEyeDrawer{tailSize, cv::Scalar{255, 0, 0}};
-
-    MovementDetector leftEyeDetector;
     // display the frame until you press a key
     while (1) {
         // capture the next frame from the webcam
@@ -298,12 +331,25 @@ int main() {
             const auto faceShape = sp(dlibImage, faces[0]);
 
             if (faceShape.num_parts() == 68) {
+                const auto leftEyePoint =
+                    cv::Point2f{faceShape.part(39).x(), faceShape.part(39).y()};
+                const auto rightEyePoint =
+                    cv::Point2f{faceShape.part(42).x(), faceShape.part(42).y()};
+
+                const auto midPoint = (leftEyePoint + rightEyePoint) / 2;
+
+                const auto leftRoiRect =
+                    cv::Rect{midPoint.x, 0, frame.cols - midPoint.x, frame.rows};
+                const auto rightRoiRect = cv::Rect{0, 0, midPoint.x, frame.rows};
+
                 mask = cv::Mat::zeros(frame.size(), frame.type());
 
                 appplyEyeMask(mask, faceShape, LEFT_POINTS);
                 appplyEyeMask(mask, faceShape, RIGHT_POINTS);
 
                 cv::dilate(mask, mask, kernel, cv::Point{-1, -1}, 2);
+
+                // apply obtained mask to the image
                 cv::bitwise_and(frame, mask, frame);
 
                 // convert all 0,0,0 pixels of the frame to 255,255,255,
@@ -311,10 +357,8 @@ int main() {
                 mask = (frame == 0);
                 frame.setTo(255, mask);
 
-                const auto mid = (faceShape.part(39).x() + faceShape.part(42).x()) / 2;
-
-                auto rightRoi = frame(cv::Rect{mid, 0, frame.cols - mid, frame.rows});
-                auto leftRoi = frame(cv::Rect{0, 0, mid, frame.rows});
+                auto rightRoi = frame(rightRoiRect);
+                auto leftRoi = frame(leftRoiRect);
 
                 if (!calibrationComplete) {
                     std::future<bool> rightFuture = std::async(
@@ -334,20 +378,36 @@ int main() {
                         std::cout << "right threshold is: " << rightThreshold << std::endl;
                     }
                 } else {
-                    std::future<cv::Point> rightFuture = std::async(
+                    std::future<cv::Point2f> rightFuture = std::async(
                         std::launch::async, &findGaze, std::ref(rightRoi), rightThreshold);
 
                     const auto leftGaze = findGaze(leftRoi, leftThreshold);
-                    const auto rightGaze = rightFuture.get() + cv::Point{mid, 0};
+                    const auto rightGaze = rightFuture.get() + cv::Point2f{midPoint.x, 0};
+
                     const auto gaze = (leftGaze + rightGaze) * 0.5;
 
-                    cv::circle(colorFrame, gaze, 2, cv::Scalar(0, 0, 255), cv::FILLED);
+                    cv::circle(colorFrame, gaze, 2, cv::Scalar(255, 0, 0), 1, cv::LINE_8);
+                    cv::circle(colorFrame, midPoint, 2, cv::Scalar(0, 255, 0), 1, cv::LINE_8);
+                    //                    cv::line(colorFrame, leftGaze, rightGaze, cv::Scalar(0, 0,
+                    //                    255)); cv::line(colorFrame, leftEyePoint, rightEyePoint,
+                    //                    cv::Scalar(255, 0, 0));
 
-                    auto vec = leftEyeDetector.detect(gaze);
-                    vec *= 5;
-                    drawingPoint += vec;
-                    std::cout << "eye vec is " << vec.x << ", " << vec.y << std::endl;
-                    leftEyeDrawer.draw(colorFrame, drawingPoint);
+                    const auto diff = gaze - midPoint;
+
+                    printMask(colorFrame, faceShape);
+
+                    if (inRange(diff.x, GAZE_RANGE) && inRange(diff.y, GAZE_RANGE)) {
+                        axis = cv::Scalar{255, 255, 255};
+
+                        cv::circle(axis, circCenter, circSize / 2, cv::Scalar(0, 0, 0), 1,
+                                   cv::LINE_8);
+                        cv::drawMarker(axis, circCenter, cv::Scalar(0, 0, 0), cv::MARKER_CROSS,
+                                       circSize);
+                        cv::circle(axis, diff + circCenter, 1, cv::Scalar(0, 0, 255), 1,
+                                   cv::LINE_8);
+
+                        std::cout << "eye diff is " << diff.x << ", " << diff.y << std::endl;
+                    }
                 }
             } else {
                 log("Face shape is not complete");
@@ -360,7 +420,7 @@ int main() {
         }
 
         // show the image on the window
-        cv::imshow(WIN, colorFrame);
+        cv::imshow(WIN, axis);
 
         // wait (10ms) for a key to be pressed
         if (cv::waitKey(33) == 'q') break;
