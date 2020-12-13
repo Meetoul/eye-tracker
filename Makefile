@@ -2,7 +2,7 @@ CXX=g++
 CXXFLAGS=-std=c++14 -march=native -Ofast
 
 OUT=tracker
-SRC=main.cpp
+SRC=main.cpp MouseDevice.cpp
 
 LIBS=opencv4
 

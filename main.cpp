@@ -1,3 +1,5 @@
+#include "MouseDevice.h"
+
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/opencv.hpp>
 
@@ -262,16 +264,6 @@ private:
 };
 
 bool inRange(int num, int range) { return abs(num) < range; }
-
-float lowerBy(float d) {
-    const float a4 = 0.0554691;
-    const float a3 = -0.49279;
-    const float a2 = 1.25006;
-    const float a1 = -1.81274;
-    const float a0 = 2;
-
-    return a4 * pow(d, 4) + a3 * pow(d, 3) + a2 * pow(d, 2) + a1 * d + a0;
-}
 
 int main() {
     cv::VideoCapture camera(0);
