@@ -28,7 +28,6 @@ public:
         const auto duration = duration_cast<milliseconds>(end - mBegin).count();
         const auto mduration = duration_cast<microseconds>(end - mBegin).count();
 
-        // std::cout << action << " took " << duration << "ms" << std::endl;
         std::cout << action << " took " << mduration << "micros" << std::endl;
     }
 
@@ -47,7 +46,10 @@ static const std::vector<unsigned long> RIGHT_POINTS = {42, 43, 44, 45, 46, 47};
 
 static const double ACCEPTABLE_DIFF = 40.0;
 
-static const int GAZE_RANGE = 500;
+static const float GAZE_MAX = 100.;
+static const float GAZE_MIN = 1.0;
+
+static const float POINTER_SPEED_FACTOR = 3.0;
 
 void appplyEyeMask(const cv::Mat& mask, const dlib::full_object_detection& shapePoints,
                    const std::vector<unsigned long> eyePoints) {
@@ -125,8 +127,6 @@ std::tuple<cv::Point2f, int> findEyeCenter(const cv::Mat& frame) {
     const auto contour = getMaxAreaContour(frame);
     const auto rect = cv::boundingRect(contour);
 
-    //    std::cout << "Eye height is " << rect.height << std::endl;
-
     return std::make_tuple(cv::Point2f{rect.x + rect.width / 2, rect.y + rect.height / 2},
                            rect.height);
 }
@@ -152,13 +152,13 @@ public:
         cv::Mat tempFrame;
         int calibratedThreshold = 0;
 
-        for (int i = 100; i > 0; --i) {
+        for (int i = 255; i > 0; --i) {
             selectPupil(frame, tempFrame, i);
 
             const auto contour = getMaxAreaContour(tempFrame);
 
             auto currentDiff = std::numeric_limits<double>::max();
-            if (contour.size() > 3) {
+            if (contour.size() > 4) {
                 cv::minEnclosingCircle(contour, center, radius);
 
                 const auto circleArea = CV_PI * radius * radius;
@@ -197,73 +197,11 @@ private:
     std::vector<int> mThresholds;
 };
 
-class TailDrawer {
-public:
-    TailDrawer(int tailSize, cv::Scalar color) : mTailSize{tailSize}, mColor{color} {}
-
-    void draw(cv::Mat& img, const cv::Point& point) {
-        if (point.x > 0 && point.y > 0) {
-            addPoint(point);
-        }
-
-        if (mPoints.size() > 1) {
-            for (int i = 1; i < mPoints.size(); ++i) {
-                cv::line(img, mPoints[i - 1], mPoints[i], mColor, 2);
-            }
-        }
-    }
-
-private:
-    void addPoint(const cv::Point& point) {
-        if (mPoints.size() == mTailSize) {
-            mPoints.erase(std::begin(mPoints));
-        }
-        mPoints.emplace_back(point);
-    }
-
-    const int mTailSize;
-    cv::Scalar mColor;
-    std::vector<cv::Point> mPoints;
-};
-
-class MovementDetector {
-public:
-    cv::Point detect(const cv::Point& point) {
-        // input point is invalid, return zero vector
-        if (point.x < 0 && point.y < 0) {
-            return cv::Point{};
-        }
-
-        // input point is a first point, return zero vector
-        if (mPrevPoint.x == INVAL && mPrevPoint.y == INVAL) {
-            mPrevPoint = point;
-            return cv::Point{};
-        }
-
-        const auto vec = cv::Point{point.x - mPrevPoint.x, point.y - mPrevPoint.y};
-
-        const auto abs_x = abs(vec.x);
-        const auto abs_y = abs(vec.y);
-
-        if ((abs_x < STAB_BOT && abs_y < STAB_BOT) || (abs_x > STAB_TOP && abs_y > STAB_TOP)) {
-            // probably shaking or jumping, return zero vector
-            return cv::Point{};
-        }
-
-        mPrevPoint = point;
-
-        return vec;
-    }
-
-private:
-    static constexpr int INVAL = -1;
-    static constexpr int STAB_BOT = 2;
-    static constexpr int STAB_TOP = 70;
-
-    cv::Point mPrevPoint{INVAL, INVAL};
-};
-
-bool inRange(int num, int range) { return abs(num) < range; }
+template <typename T>
+bool inRange(T num, T min, T max) {
+    const auto absNum = abs(num);
+    return absNum > min && absNum < max;
+}
 
 int main() {
     cv::VideoCapture camera(0);
@@ -287,8 +225,7 @@ int main() {
 
     int dilation_size = 1;
     int dilation_type = cv::MORPH_RECT;
-    // int dilation_type = MORPH_CROSS;
-    // int dilation_type = MORPH_ELLIPSE;
+
     cv::Mat kernel = cv::getStructuringElement(
         dilation_type, cv::Size(2 * dilation_size + 1, 2 * dilation_size + 1),
         cv::Point(dilation_size, dilation_size));
@@ -306,9 +243,11 @@ int main() {
 
     cv::Mat axis{circSize, circSize, CV_8UC3, cv::Scalar{255, 255, 255}};
 
-    // display the frame until you press a key
+    MouseDevice mouseDevice;
+
+    mouseDevice.create();
+
     while (1) {
-        // capture the next frame from the webcam
         camera >> colorFrame;
 
         cv::flip(colorFrame, colorFrame, 1);
@@ -380,26 +319,29 @@ int main() {
 
                     cv::circle(colorFrame, gaze, 2, cv::Scalar(255, 0, 0), 1, cv::LINE_8);
                     cv::circle(colorFrame, midPoint, 2, cv::Scalar(0, 255, 0), 1, cv::LINE_8);
-                    //                    cv::line(colorFrame, leftGaze, rightGaze, cv::Scalar(0, 0,
-                    //                    255)); cv::line(colorFrame, leftEyePoint, rightEyePoint,
-                    //                    cv::Scalar(255, 0, 0));
 
-                    const auto diff = gaze - midPoint;
+                    auto diff = gaze - midPoint;
+
+                    std::cout << "eye diff is " << diff.x << ", " << diff.y << std::endl;
 
                     printMask(colorFrame, faceShape);
 
-                    if (inRange(diff.x, GAZE_RANGE) && inRange(diff.y, GAZE_RANGE)) {
-                        axis = cv::Scalar{255, 255, 255};
-
-                        cv::circle(axis, circCenter, circSize / 2, cv::Scalar(0, 0, 0), 1,
-                                   cv::LINE_8);
-                        cv::drawMarker(axis, circCenter, cv::Scalar(0, 0, 0), cv::MARKER_CROSS,
-                                       circSize);
-                        cv::circle(axis, diff + circCenter, 1, cv::Scalar(0, 0, 255), 1,
-                                   cv::LINE_8);
-
-                        std::cout << "eye diff is " << diff.x << ", " << diff.y << std::endl;
+                    if (!(inRange(diff.x, GAZE_MIN, GAZE_MAX) &&
+                          inRange(diff.y, GAZE_MIN, GAZE_MAX))) {
+                        diff = cv::Point2f{0.0, 0.0};
                     }
+
+                    diff += cv::Point2f{0.0, 3.0};
+                    diff *= POINTER_SPEED_FACTOR;
+
+                    axis = cv::Scalar{255, 255, 255};
+
+                    cv::circle(axis, circCenter, circSize / 2, cv::Scalar(0, 0, 0), 1, cv::LINE_8);
+                    cv::drawMarker(axis, circCenter, cv::Scalar(0, 0, 0), cv::MARKER_CROSS,
+                                   circSize);
+                    cv::circle(axis, diff + circCenter, 1, cv::Scalar(0, 0, 255), 1, cv::LINE_8);
+
+                    mouseDevice.move(diff.x, diff.y);
                 }
             } else {
                 log("Face shape is not complete");
@@ -411,10 +353,8 @@ int main() {
             log("More than one faces detected");
         }
 
-        // show the image on the window
         cv::imshow(WIN, axis);
 
-        // wait (10ms) for a key to be pressed
         if (cv::waitKey(33) == 'q') break;
     }
 

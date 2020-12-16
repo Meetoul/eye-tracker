@@ -41,27 +41,21 @@ void MouseDevice::destroy() {
     close(mFd);
 }
 
-void MouseDevice::clickLeft() {
-    postEvent(EV_KEY, BTN_LEFT);
-}
+void MouseDevice::clickLeft() { postEvent(EV_KEY, BTN_LEFT); }
 
-void MouseDevice::clickRight() {
-    postEvent(EV_KEY, BTN_RIGHT);
-}
+void MouseDevice::clickRight() { postEvent(EV_KEY, BTN_RIGHT); }
 
 void MouseDevice::move(int x, int y) {
     postEvent(EV_REL, REL_X, x);
     postEvent(EV_REL, REL_Y, y);
 }
 
-void MouseDevice::postEvent(int type, int code, int val)
-{
+void MouseDevice::postEvent(int type, int code, int val) {
     postEventRaw(type, code, val);
     postEventRaw(EV_SYN, SYN_REPORT, 0);
 }
 
-void MouseDevice::postEventRaw(int type, int code, int val)
-{
+void MouseDevice::postEventRaw(int type, int code, int val) {
     struct input_event ie;
 
     ie.type = type;
